@@ -4,15 +4,19 @@ import csv
 
 import pandas as pd
 import numpy as np
-import pyflux as pf
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.stattools import arma_order_select_ic
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.arima_model import ARMA
 from statsmodels.tsa.arima_model import ARIMA
+from datetime import datetime
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 plt.style.use(u'ggplot')
 
+
+ylim = [500000, 1000000]
+#ylim = [2, 7]
 
 class Forecast(object):
     '''time series forecast'''
@@ -72,53 +76,76 @@ class Forecast(object):
 
     def arima(self, test_size=13):
         '''run arima model'''
-        # series = pd.Series(np.asarray(self.values), index=self.headers)
-        series = np.asarray(self.values)
+        #time_stamp = [datetime.strptime(item.strip(), '%Y/%m/%d') for item in self.headers]
+        time_stamp = [item.strip() for item in self.headers]
+        data = np.asarray(self.values)
+        if self.math_trans:
+            data = np.log10(data)
+        series = pd.Series(data, index=pd.to_datetime(time_stamp))
         dframe = pd.DataFrame({self.var_name: series})
-        diffn = 0
-        print 'origin == stationarity: %f, stochastic: %f' % (self._stationarity(dframe[self.var_name]), self._stochastic(dframe[self.var_name]))
-        # dframe['log'] = np.log(dframe[self.var_name])
-        # print 'log_origin == stationarity: %f, stochastic: %f' %
-        # (self._stationarity(dframe['log']), self._stochastic(dframe['log']))
-        dframe['first_diff'] = dframe[self.var_name].diff()
-        print 'first diff == stationarity: %f, stochastic: %f' % (self._stationarity(dframe['first_diff'].dropna(inplace=False)), self._stochastic(dframe['first_diff'].dropna(inplace=False)))
-        dframe = dframe.dropna(inplace=False)
-        # dframe['first_diff'].plot()
-        # plt.show()
-        train = dframe[:-test_size]
-        test = dframe[-test_size:]
-        # dframe['log_first_diff'] = np.log(dframe['log']).diff()
-        # print 'log first diff == stationarity: %f, stochastic: %f' %
-        # (self._stationarity(dframe['log_first_diff'].dropna(inplace=False)),
-        # self._stochastic(dframe['log_first_diff'].dropna(inplace=False)))
+        #dframe['time'] = time_stamp
+        #dframe.set_index(dframe['time'])
+        #pd.to_datetime(dframe.index, format='%Y-%m-%d')
+        train = dframe
+        if test_size > 0:
+            train = dframe[:-test_size]
+            test = dframe[-test_size:]
 
-        # orders = self._choose_orders(train[self.var_name].values, max_lag=10)
-        orders = self._choose_params(train[self.var_name].values, max_lag=10)
+        orders = self._choose_params(train[self.var_name], max_lag=4)
         _ar = orders[0]
         _ma = orders[1]
-        print 'p = %d, q = %d, bic = %f' % (_ar, _ma, orders[-1])
+        print 'Best params: p = %d, q = %d, bic = %f' % (_ar, _ma, orders[-1])
 
-        # model = pf.ARIMA(data=train, ar=_ar, ma=_ma, target='first_diff')
-        # est = model.fit('MLE')
-        # est.summary()
-        model = ARIMA(train[self.var_name].values, (_ar, 1, _ma)).fit()
-        # model.plot_predict(h=13, past_values=len(train) // 2)
-        pred = model.forecast(13)[0]
-        # pred = self._predict_recover(pred, train, diffn)
-        # print pred
-        print 'test.size: ', test.size
-        print test[self.var_name].values
-        print pred
-        rmse = np.sqrt(
-            ((np.array(pred) - np.array(test[self.var_name].values))**2).sum() / test.size)
-        print 'RMSE: ', rmse
-        dframe[self.var_name].plot()
-        # model.plot_predict(26, 38, dynamic=True, plot_insample=False)
-        x = range(26, 39)
-        plt.plot(x, pred, 'mo--')
+        model = ARIMA(train[self.var_name], (_ar, 1, _ma)).fit()
+        #model.summary()
+        pred = model.forecast(13)
+        mean_pred = pred[0]
+        if test_size > 0:
+            rmse = np.sqrt(((np.array(mean_pred) - np.array(test[self.var_name].values))**2).sum() / test.size)
+            if self.math_trans:
+                rmse = np.sqrt(((10 ** np.array(mean_pred) - 10 ** np.array(test[self.var_name].values))**2).sum() / test.size)
+            print 'RMSE: ', rmse
+
+            self.plot_forecast(pred, self.var_name+'_eval', ylim, test_size, save=True)
+        else:
+            self.plot_forecast(pred, self.var_name+'_pred', ylim, test_size, save=True)
+        print mean_pred
+
+    def plot_forecast(self, pred, label, ylim, test_size, save=False):
+        '''plot forecast results'''
+        xlen = len(self.headers) + 13 - test_size
+        x = np.linspace(1, xlen, xlen)
+        idx = np.arange(1, len(self.headers), 6)
+        ticks = []
+        for i in range(xlen):
+            if i in idx:
+                ticks.append(self.headers[i])
+            else:
+                ticks.append('')
+
+        fig = plt.figure(figsize=(16, 9))
+        ax = fig.add_subplot(111)
+        ax.plot(x[:len(self.values)], self.values, 'mo-', label=label)
+        plt.xticks(x, ticks)
+        ax.set_ylim(ylim)
+
+        mean_pred = pred[0]
+        bottom = pred[2][:,0]
+        top = pred[2][:,1]
+        if self.math_trans:
+            mean_pred = 10 ** mean_pred
+            bottom = 10 ** bottom
+            top = 10 ** top
+        ax.plot(x[-mean_pred.size:], mean_pred, 'rv--', label = label+'_predicted')
+        line_legend = ax.legend(loc='upper right', frameon=False)
+        ax.add_artist(line_legend)
+        ax.fill_between(x[-mean_pred.size:], bottom, top, color='k', alpha=0.2)
+        rect = mpatches.Patch(color='k', label='95% confidence', alpha=0.2)
+        rect_legend = ax.legend(handles=[rect], loc='lower right')
+        ax.add_artist(rect_legend)
+        if save:
+            plt.savefig(label, bbox_inches='tight')
         plt.show()
-        # TODO: 1. add datetime index 2. plot fancy figures 3. correlation
-        # analysis
 
     def _stationarity(self, ts_data):
         '''test stationarity'''
@@ -150,7 +177,7 @@ class Forecast(object):
             else:
                 ticks.append('')
 
-        self._plot(x, self.values, ticks, self.var_name + '_original', 'co-')
+        self._plot(x, self.values, ticks, 'co-', ylim, self.var_name + '_original')
 
     def plot_first_diff(self):
         '''plot first diff'''
@@ -166,15 +193,17 @@ class Forecast(object):
                 ticks.append(item)
             else:
                 ticks.append('')
-        self._plot(x, diff, ticks, self.var_name + '_1st_diff', 'mo-')
+        self._plot(x, diff, ticks, 'mo-', [-300000, 300000], self.var_name + '_1st_diff')
 
-    def _plot(self, x, y, xticks, label, style):
+    def _plot(self, x, y, xticks, style, ylim, label=None):
         '''plot the time series'''
         plt.figure(figsize=(16, 9))
         plt.plot(x, y, style, label=label)
         plt.legend(loc='upper right', frameon=False)
         plt.xticks(x, xticks)
-        plt.savefig(label, bbox_inches='tight')
+        plt.ylim(ylim)
+        if label is not None:
+            plt.savefig(label, bbox_inches='tight')
         plt.show()
 
     def stat_test_column(self, column):
@@ -228,18 +257,18 @@ def run(args):
         forcast.plot_first_diff()
     elif args.action == 'eval':
         forcast.arima()
-    elif args.action == 'plotpred':
-        return
+    elif args.action == 'pred':
+        forcast.arima(test_size=0)
 
 
 if __name__ == '__main__':
     PARSER = argparse.ArgumentParser(description='Time series forecast')
     PARSER.add_argument('-action', choices=['plot', 'stattest',
-                                            'plotdiff', 'eval', 'plotpred'], default='eval', help='''plot: plot original time series
+                                            'plotdiff', 'eval', 'pred'], default='eval', help='''plot: plot original time series
                                             stattest: stationarity and randomness test
                                             plotdiff: plot first difference of the time series
                                             eval: evaluate model
-                                            plotpred: plot predict values
+                                            pred: plot predict values
                                             ''')
     PARSER.add_argument('--math_trans', action='store_true')
     PARSER.add_argument('-feature', type=int, default=2)
